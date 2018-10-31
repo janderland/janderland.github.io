@@ -1,139 +1,20 @@
-<!DOCTYPE html>
+<!DOCTYPE HTML>
 <html>
-    <head>
-        <link rel="stylesheet" href="/css/app.css">
-        <script src="/js/app.js"></script>
-        <title>janderland</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-    </head>
-    
-    <body data-page="home">
-        
-        
-        <!--
- Home Top Bar
--->
-<div id="top-bar" class="l-home">
-    <h1 id="top-bar-title">janderland</h1>
-    <ul class="menu" id="top-bar-search">
-        <li><input type="search" placeholder="search all"></li>
-    </ul>
-</div>
-
-<article>
-	<!--
-	 Floating-Head Menu
-	-->
-	<ul class="menu expanded text-center">
-		<li><a id="button1" href="/tags/word" title="word">
-			<i class="fi-pencil"></i>
-			<span class="small">word</span>
-		</a></li>
-		<li><a id="button2" href="/tags/sound" title="sound">
-			<i class="fi-music"></i>
-			<span class="small">sound</span>
-		</a></li>
-		<li><a id="button3" href="/tags/code" title="code">
-			<i class="fi-laptop"></i>
-			<span class="small">code</span>
-		</a></li>
-	</ul>
-	<div id="face-wrapper">
-		<img id="face" src="assets/face/idle1.jpg">
-		<div id="bubble">
-			I'm <a TODO="get link for my bio">Jon Anderson</a>. Found amongst these virtual pages are my creations of word, sound, and code. #Enjoy
-			<div id="bubble-arrow">
-				<i class="fi-play"></i>
-			</div>
-		</div>
-		<div class="clear-both"></div>
-	</div>
-
-	<!--
-	 Recent Posts
-	-->
-    <div class="callout-header secondary">
-        New Stuff
-    </div>
-    
-
-<div class="posts">
-    
-    <table class="posts-list">
-        
-        <tbody>
-            <tr>
-                <td rowspan="2" class="posts-date data" data-value="April 26 2016">
-                    
-                    <div>Apr 26</div>
-                    <div>2016</div>
-                </td>
-                <td class="posts-name data" data-value="Close Your Eyes">
-                    <a href="/Close-Your-Eyes/">Close Your Eyes</a>
-                </td>
-                <td class="posts-excerptlarge data">
-                    
-                    Have you ever fallen asleep in a cold room?
-                </td>
-            </tr>
-            <tr>
-                <td class="posts-excerptsmall">
-                    
-                    Have you ever fallen asleep in a cold room?
-                </td>
-            </tr>
-        </tbody>
-        
-        <tbody>
-            <tr>
-                <td rowspan="2" class="posts-date data" data-value="April 08 2016">
-                    
-                    <div>Apr 08</div>
-                    <div>2016</div>
-                </td>
-                <td class="posts-name data" data-value="Bringing Me Nowhere">
-                    <a href="/Bringing-Me-Nowhere/">Bringing Me Nowhere</a>
-                </td>
-                <td class="posts-excerptlarge data">
-                    
-                    She brings me to resonation.
-                </td>
-            </tr>
-            <tr>
-                <td class="posts-excerptsmall">
-                    
-                    She brings me to resonation.
-                </td>
-            </tr>
-        </tbody>
-        
-        <tbody>
-            <tr>
-                <td rowspan="2" class="posts-date data" data-value="April 02 2016">
-                    
-                    <div>Apr 02</div>
-                    <div>2016</div>
-                </td>
-                <td class="posts-name data" data-value="Genesis">
-                    <a href="/Genesis/">Genesis</a>
-                </td>
-                <td class="posts-excerptlarge data">
-                    
-                    And so it began.
-                </td>
-            </tr>
-            <tr>
-                <td class="posts-excerptsmall">
-                    
-                    And so it began.
-                </td>
-            </tr>
-        </tbody>
-        
-    </table>
-    
-</div>
-</article>
-
-    </body>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Main</title>
+    <link href="https://fonts.googleapis.com/css?family=Merriweather|Roboto" rel="stylesheet">
+    <script src="Janderland.js"></script>
+</head>
+<body id="body">
+    <script>
+        const app = Elm.Janderland.init({
+            node: document.getElementById('body'),
+            flags: {
+                width: window.innerWidth
+            }
+        });
+    </script>
+</body>
 </html>

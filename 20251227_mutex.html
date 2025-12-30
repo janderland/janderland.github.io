@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Intro to Foundation DB via a Distributed Mutex</title>
+  <link href="https://fonts.googleapis.com/css?family=Roboto" rel="stylesheet" />
+  <link rel="stylesheet" href="css/code.css" />
+  <link rel="stylesheet" href="css/style.css" />
+  <script src="js/highlight.js"></script>
+  <script src="js/fql.js"></script>
+  <script src="js/go.js"></script>
+</head>
+<body>
+<header>
+  <a href="index.html"><span class="jander">jander</span><span class="land">.land</span></a>
+</header>
+<h1>Intro to Foundation DB via a Distributed Mutex</h1>
+<span class="date">2025-12-27</span>
+<p>At work, I found myself in apparent need of synchronizing access to a
+shared resources. The actors requesting access were two distributed
+services. Being fond and familiar with the “assembly language of
+databases”, I knew I could implement a distributed mutex on top of
+Foundation DB.</p>
+<p>Calling Foundation DB the “assembly language of databases” (something
+I once read on <a
+href="https://news.ycombinator.com/item?id=40328552">Hacker News</a>) is
+an exaggeration. Nonetheless, Foundation DB does provide a set
+primitives which makes accessing distributed memory safe and
+graceful.</p>
+<p>Further investigation into the requirements revealed that
+synchronization was not necessary. Regardless, I implemented the <a
+href="https://github.com/janderland/fdb-mutex">distributed mutex</a> in
+Go for fun, and in this post I’ll use that implementation to outline the
+features of Foundation DB.</p>
+<h2 id="intro-to-foundation-db">Intro to Foundation DB</h2>
+<p><a href="https://apple.github.io/foundationdb/index.html">Foundation
+DB</a> is a key-value database. Keys are byte strings (less than 10kB)
+pointing at values which are slightly larger byte strings (less than
+100kB). Foundation DB is designed for highly concurrent workloads with
+many clients and many simultaneous transactions. Transactions must take
+less than 60s to complete and read-write less than 10MB of data.</p>
+<p>The <a
+href="https://apple.github.io/foundationdb/architecture.html#transaction-processing)">transactions</a>
+follow an optimistic concurrency model. No key-values are ever locked
+from access. Instead, if any of the key-values read by the transaction
+are modified before the transaction commits, then the transaction is
+rolled back and retried. When this happens, we call it a <a
+href="https://apple.github.io/foundationdb/developer-guide.html#how-foundationdb-detects-conflicts">transaction
+conflict</a>.</p>
+<p>These conflicts prevent inconsistent reads and allow Foundation DB to
+guarantee <a href="https://en.wikipedia.org/wiki/ACID">ACID</a>
+properties. There’s a catch though: <a
+href="https://en.wikipedia.org/wiki/Consistency_(database_systems)">consistency</a>
+(the ‘C’ in ACID) is enforced by the clients. Foundation DB does not
+ensure data obeys any schema or constraints. Rather, if the client is
+written properly, consistency emerges from transaction conflicts.</p>
+<p>Foundation DB sorts its key-values by the numeric value of the key’s
+byte string. Given a byte string prefix, adjacent key-values can be
+efficiently streamed to the client. A group of key-values containing a
+common prefix is called a <a
+href="https://apple.github.io/foundationdb/developer-guide.html#subspaces">subspace</a>.
+To add a new key-value to a subspace, you simply write a key-value with
+the appropriate prefix, and due to sorting, the key-value will be placed
+beside its peers.</p>
+<p>Foundation DB provides a special kind of subspace called a <a
+href="https://apple.github.io/foundationdb/developer-guide.html#directories">directory</a>.
+Traditional directory paths are mapped to short byte string prefixes.
+For instance, the path <code>/my/dir/path</code> could be mapped to the
+prefix <code>0xfa3209</code>. Key-values written into this directory
+would include this prefix.</p>
+<p>Foundation DB provides an encoding scheme for <a
+href="https://apple.github.io/foundationdb/data-modeling.html#tuples">tuples</a>.
+This allows clients to encode common data types (integer, float,
+boolean, string) with <a
+href="https://github.com/apple/foundationdb/blob/main/design/tuple.md">deterministic
+ordering</a>. For instance, when used as a key, the tuple
+<code>(23,"abc")</code> will always appear before the tuple
+<code>(52,"xyz")</code>.</p>
+<p>When a transaction is committed, it receives a unique 12-byte ID
+called a <a
+href="https://apple.github.io/foundationdb/data-modeling.html#versionstamps">versionstamp</a>.
+The first 10 bytes are a monotonically increasing integer and the last 2
+bytes are chosen by the client of the transaction. The integer is
+incremented around once per nanosecond. For a given database, you’ll
+never observe the same versionstamp twice, so they can be used as unique
+IDs or as a noncontinuous sequence.</p>
+<h2 id="key-value-schema">Key-Value Schema</h2>
+<p>The schema for our mutex is simple. We will have a key-value for
+identifying the owner of the mutex and a <a
+href="https://apple.github.io/foundationdb/data-modeling.html#arrays">queue</a>
+on which waiting clients may place themselves. When the owner of the
+mutex releases, it will grab the next client from the head of the queue
+and make them the owner. Clients can watch the key-value specifying the
+owner and unblock when they are given control of the mutex.</p>
+<p>Because this is a distributed system, there is always the chance that
+the owner of the mutex could die and deadlock the entire application. To
+avoid this, the owner will be required to heartbeat the mutex. A
+background service will watch for stale heartbeats and pass the mutex
+ownership on to the next client.</p>
+<p>Using my <a href="https://github.com/janderland/fql">query
+language</a>, we can describe the schema as follows:</p>
+<pre><code>% Always one owner key. When the mutex is unlocked,
+% :name is an empty string. The owner of the mutex
+% updates :heartbeat once a second.
+/path/to/mutex(&quot;owner&quot;,&lt;name:str&gt;)=&lt;heartbeat:vstamp&gt;
+
+% Whenever we write an owner KV, we clear the range of
+% owner keys beforehand to ensure there&#39;s only one key
+% in the owner subspace.
+/path/to/mutex(&quot;owner&quot;,...)=clear
+
+% Zero or more queue keys.
+/path/to/mutex(&quot;queue&quot;,&lt;index:vstamp&gt;)=&lt;name:str&gt;
+
+% When the owner releases the mutex, they pop a new owner
+% off the front of the queue. If the queue is empty then
+% they write an emtpy string for :name.
+/path/to/mutex(&quot;queue&quot;,&lt;index:vstamp&gt;)=&lt;name:str&gt;
+/path/to/mutex(&quot;queue&quot;,:index)=clear
+/path/to/mutex(&quot;owner&quot;,:name)=nil</code></pre>
+<p>The <code>name</code> strings are unique identifiers provided by the
+clients. Heartbeats and indexes (for ordering the queue) are written
+using versionstamps. As long as the heartbeat value keeps changing, we
+know the mutex owner is still alive. Because versionstamps are
+monotonically increasing, new clients will always be placed at the back
+of the queue.</p>
+<p>We can easily dump the total state of the mutex by reading its entire
+subspace:</p>
+<pre class="query"><code>% Read the entire mutex state.
+/path/to/mutex(...)</code></pre>
+<pre class="result"><code>/path/to/mutex(&quot;owner&quot;,&quot;roger&quot;)=0x52750b30ffbc7de3b3620000
+/path/to/mutex(&quot;queue&quot;,0x52750b30ffbbdbb3348f0000)=&quot;daniel&quot;
+/path/to/mutex(&quot;queue&quot;,0x52750b30ffbb3982b5bc0000)=&quot;leo&quot;
+/path/to/mutex(&quot;queue&quot;,0x52750b30ffba975236e90000)=&quot;wilma&quot;</code></pre>
+<blockquote>
+<p>This article uses features of FQL (my <a
+href="https://github.com/janderland/fql">query language</a>) which I
+have yet to document publicly. I’m hoping the language is simple enough
+that readers can infer what the queries mean.</p>
+</blockquote>
+<h2 id="implementing-the-client">Implementing the Client</h2>
+<p>As stated earlier, Foundation DB does nothing to enforce the above
+schema; No authorizations, constraints, or structures are verified
+server side; the client must manage all of this.</p>
+<p>In the client implementation, I isolate the marshaling of key-values
+to define the schema explicitly. I generally have a marshal and
+unmarshal method for every key and value, but for this application I
+didn’t need to unmarshal the owner value or the queue key. Some
+marshaling methods return a key range which is used for reading an
+entire subspace. Below, I’ll list the prototypes of the <a
+href="https://github.com/janderland/fdb-mutex/blob/5075a63324ef2c49d517b714134bff003a45093a/kv.go#L183">marshaling
+methods</a>.</p>
+<pre class="language-go"><code>func packOwnerRange() (fdb.KeyRange, error)
+func packOwnerKey(name string) fdb.Key
+func unpackOwnerKey(key fdb.Key) (string, error)
+func packOwnerValue() []byte
+func packQueueRange() (fdb.KeyRange, error)
+func packQueueKey() (fdb.Key, error)
+func packQueueValue(name string) []byte
+func unpackQueueValue(val []byte) string</code></pre>
+<p>Using these marshaling methods, I implement a <a
+href="https://github.com/janderland/fdb-mutex/blob/5075a63324ef2c49d517b714134bff003a45093a/kv.go#L23">method
+for each query</a>. The queries accept an <code>fdb.Transactor</code> as
+an argument. This can either be the handle to the database or a running
+transaction, allowing the queries to be run in isolation or composed
+together into a larger transactions.</p>
+<pre class="language-go"><code>func setOwner(db fdb.Transactor, name string) error 
+func getOwner(db fdb.Transactor) (owner, error) 
+func watchOwner(ctx context.Context, db fdb.Transactor) &lt;-chan error 
+func heartbeat(db fdb.Transactor, name string) error 
+func enqueue(db fdb.Transactor, name string) error 
+func dequeue(db fdb.Transactor) (string, error) </code></pre>
+<p>The <code>&lt;-chan error</code> returned by
+<code>watchOwner()</code> acts like a future. When the owner changes,
+the channel returns <code>nil</code>. If an error occurs which causes
+the watch to fail, it returns an error.</p>
+<p>Finally, the public methods can string together several queries to
+implement the desired behavior. Below is the implementation for
+acquiring the mutex. This is a blocking call and depends on the
+non-blocking <code>TryAcquire</code> which claims the mutex if it’s
+unlocked or places the client onto the queue.</p>
+<pre class="language-go"><code>// Blocks until the current client is the owner of the mutex. The `ctx`
+// argument includes a cancelation signal for aborting the operation.
+func (x *Mutex) Acquire(ctx context.Context, db fdb.Database) error {
+  // Attempts a non-blocking aquire. If it succeeds, we can return.
+  acquired, err := x.TryAcquire(db)
+  if err != nil {
+    return fmt.Errorf(&quot;failed to try aquire: %w&quot;, err)
+  }
+  if acquired {
+    return nil
+  }
+
+  // Check if we&#39;re the mutex owner. If not, then watch for writes on
+  // the owner key-value. When the watch fires, check if we&#39;re the owner
+  // again. Loop forever until either we are the owner or the cancelation
+  // token fires.
+  for {
+    watch, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+      owner, err := x.getOwner(tr)
+      if err != nil {
+        return nil, fmt.Errorf(&quot;failed to get owner: %w&quot;, err)
+      }
+
+      // Return nil (instead of a channel) to
+      // signal that we are now the owner of
+      // the mutex.
+      if owner.name == x.name {
+        return nil, nil
+      }
+
+      return x.watchOwner(ctx, tr), nil
+    })
+    if err != nil {
+      return err
+    }
+
+    // If watch is nil then we are the owner.
+    // Otherwise, wait for the watch to fire
+    // and check again.
+    if watch == nil {
+      // Start a background goroutine which
+      // heartbeats the mutex once per second.
+      x.startHeartbeat()
+      return nil
+    }
+
+    // If the cancelation signal fires or a server-side error
+    // occurs then the channel below will return an error.
+    // Otherwise it simply returns nil when the watched
+    // key-value is updated.
+    if err := &lt;-watch.(&lt;-chan error); err != nil {
+      return fmt.Errorf(&quot;failed to watch owner: %w&quot;, err)
+    }
+  }
+}</code></pre>
+<h2 id="ensuring-consistency">Ensuring Consistency</h2>
+<p>If we take a look at the <code>TryAcquire</code> method we can get a
+better understanding of Foundation DB’s concurrency model.
+<code>TryAcquire</code> executes a transaction that does one of two
+things: acquires the mutex or places the client on the back of the
+queue. There is a third case where we are already the owner, but that
+one is trivial.</p>
+<pre class="language-go"><code>func (x *Mutex) TryAcquire(db fdb.Database) (bool, error) {
+  // Read the owner key-value and either lock the mutex or place
+  // ourselves onto the back of the queue.
+  acquired, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+    owner, err := x.getOwner(tr)
+    if err != nil {
+      return false, fmt.Errorf(&quot;failed to get owner: %w&quot;, err)
+    }
+
+    switch owner.name {
+    case x.name:
+      // We&#39;re already the owner.
+      return true, nil
+
+    case &quot;&quot;:
+      // There is no owner (mutex is unlocked). Clear the
+      // owner subspace and write a new owner key with our
+      // name.
+      err := x.setOwner(tr, x.name)
+      if err != nil {
+        return nil, fmt.Errorf(&quot;failed to set owner: %w&quot;, err)
+      }
+      return true, nil
+
+    default:
+      // Someone else is the owner (mutex is locked). Place
+      // our name on the queue.
+      return false, x.enqueue(db, x.name)
+    }
+  })
+  if err != nil {
+    return false, err
+  }
+
+  // Start a background goroutine which
+  // heartbeats the mutex once per second.
+  x.startHeartbeat()
+
+  return acquired.(bool), err
+}</code></pre>
+<p>For correct behavior, Foundation DB will need to manage multiple
+clients attempting to do these writes simultaneously.</p>
+<p>Let’s explore the case where two clients try to claim the same
+unlocked mutex. Both clients will read the empty owner key
+<code>/path/to/mutex("owner","")</code>. They will both try to clear
+this key and replace it with one containing their respective name:
+<code>/path/to/mutex("owner",&lt;name:str&gt;)</code>.</p>
+<p>Transactions automatically manage a <a
+href="https://apple.github.io/foundationdb/developer-guide.html#conflict-ranges">conflict
+range</a> which tracks the key-values written &amp; read during the
+transaction. When it comes time to commit, Foundation DB checks if any
+of the key-values read were modified by another client during the
+transaction. If so, the transaction is rolled back and retried,
+preventing the client from acting on a stale read.</p>
+<p><img src="img/seq.svg" /></p>
+<p>In the sequence diagram above, take a look at the events happening
+between <code>t1</code> and <code>t2</code>. Because
+<code>client-A</code> reads the empty owner key, that key becomes a part
+of it’s conflict range. <code>client-B</code> overwrites this key and
+commits before <code>client-A</code>. This causes
+<code>client-A</code>’s transaction to be rejected. Upon retrying the
+transaction, <code>client-A</code> sees that <code>client-B</code> is
+the owner of the mutex. Instead of claiming ownership,
+<code>client-A</code> places itself onto the queue.</p>
+<h2 id="integration-testing">Integration Testing</h2>
+<p>When testing client implementations, I always use integration
+testing. Tests perform reads and writes against an containerized
+Foundation DB cluster. I reimplemented this setup frequently enough that
+I decided to pull out the logic into a <a
+href="https://github.com/janderland/fenv">framework</a> which can run
+locally or in GitHub actions, caches build &amp; test results, etc. A
+local installation of Foundation DB works fine as well.</p>
+<p>For each test, I create a random subspace to isolate the reads and
+writes. This subspace is deleted after each test runs. For this
+isolation to work, you must ensure your client does all it’s reads and
+writes within the context of a <a
+href="https://github.com/janderland/fdb-mutex/blob/5075a63324ef2c49d517b714134bff003a45093a/mutex.go#L25">configurable
+subspace</a>.</p>
+<pre class="language-go"><code>type testFn func(t *testing.T, db fdb.Database, root subspace.Subspace)
+
+func runTest(t *testing.T, test testFn) {
+  // Connect to the database.
+  fdb.MustAPIVersion(710)
+  db := fdb.MustOpenDefault()
+
+  // Generate a random directory name.
+  randBytes := make([]byte, 8)
+  if _, err := rand.Read(randBytes); err != nil {
+    t.Fatalf(&quot;failed to generate random bytes: %v&quot;, err)
+  }
+  dirName := hex.EncodeToString(randBytes)
+
+  // Open the directory. This process maps the directory
+  // to a unique, short key prefix.
+  root, err := directory.CreateOrOpen(db, []string{dirName}, nil)
+  if err != nil {
+    t.Fatalf(&quot;failed to create root directory: %v&quot;, err)
+  }
+
+  // Schedule a destructor which deletes the directory
+  // (clearing all it&#39;s key-values) after the test is
+  // complete.
+  defer func() {
+    err := directory.Root().Remove(db, []string{dirName})
+    if err != nil {
+      t.Errorf(&quot;failed to delete root directory: %v&quot;, err)
+    }
+  }()
+
+  // Run the test.
+  test(t, db, root)
+}
+</code></pre>
+<p>To ensure the marshaling methods remain symmetric, I perform round
+trip tests for every key and value. Combined with tests for <a
+href="https://github.com/janderland/fdb-mutex/blob/5075a63324ef2c49d517b714134bff003a45093a/mutex_test.go#L17">each
+query</a>, it becomes easy to avoid schema drift in different parts of
+the implementation. Once again, Foundation DB doesn’t enforce the
+schema, so the extra checks are warranted.</p>
+<pre class="language-go"><code>func TestOwnerMarshaling(t *testing.T) {
+  t.Run(&quot;key&quot;, func(t *testing.T) {
+      in := &quot;name&quot;
+      out := UnmarshalOwnerKey(MarshalOwnerKey(in))
+      require.Equal(out, in)
+  })
+  t.Run(&quot;value&quot;, func(t *testing.T) {
+      in := []byte{0xf2,0x43,0xac,0x00}
+      out := UnmarshalOwnerValue(MarshalOwnerValue(in))
+      require.Equal(out, in)
+  }
+}</code></pre>
+<h2 id="conclusion">Conclusion</h2>
+<p>As the name implies, Foundation DB operates at a lower level than
+other databases. It takes care of the foundational problems of
+distributed data storage but requires the developer to implement their
+model from a handful of primitives.</p>
+<p>Foundation DB can partially replace common patterns like leader
+election or service discovery. It can be used to coordinate clusters of
+workers or index large amounts of blob data. It’s become the backbone of
+the distributed systems I’ve worked on.</p>
+<p>There are many features which this article doesn’t cover, like <a
+href="https://apple.github.io/foundationdb/developer-guide.html#atomic-operations">server-side
+operations</a>, <a
+href="https://apple.github.io/foundationdb/developer-guide.html#snapshot-reads">manual
+conflict management</a>, or <a
+href="https://apple.github.io/foundationdb/transaction-tagging.html">transaction
+throttling</a>. Take a look at the Foundation DB <a
+href="https://apple.github.io/foundationdb/index.html">documentation</a>
+for more information. If you have any questions, drop by the Foundation
+DB <a href="https://forums.foundationdb.org/">forums</a>. I’ll do my
+best to answer any questions.</p>
+</body>
+<script>
+    hljs.highlightAll();
+    document.querySelectorAll(":not(pre) > code").forEach((e) => {
+      let bash = false;
+      for (let p = e.parentElement; p; p = p.parentElement) {
+        if (p.classList.contains("language-bash")) {
+          bash = true;
+          break;
+        }
+      }
+
+      if (bash) e.classList.add("language-bash");
+      else e.classList.add("language-fql");
+      hljs.highlightElement(e);
+    });
+</script>
+</html>

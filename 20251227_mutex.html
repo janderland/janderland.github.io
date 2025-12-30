@@ -5,7 +5,7 @@
   <meta name="generator" content="pandoc" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
   <title>Intro to Foundation DB via a Distributed Mutex</title>
-  <link href="https://fonts.googleapis.com/css?family=Roboto" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css?family=Roboto|Merriweather" rel="stylesheet" />
   <link rel="stylesheet" href="css/code.css" />
   <link rel="stylesheet" href="css/style.css" />
   <script src="js/highlight.js"></script>
@@ -18,6 +18,7 @@
 </header>
 <h1>Intro to Foundation DB via a Distributed Mutex</h1>
 <span class="date">2025-12-27</span>
+<hr>
 <p>At work, I found myself in apparent need of synchronizing access to a
 shared resources. The actors requesting access were two distributed
 services. Being fond and familiar with the “assembly language of
@@ -67,7 +68,7 @@ beside its peers.</p>
 <p>Foundation DB provides a special kind of subspace called a <a
 href="https://apple.github.io/foundationdb/developer-guide.html#directories">directory</a>.
 Traditional directory paths are mapped to short byte string prefixes.
-For instance, the path <code>/my/dir/path</code> could be mapped to the
+For instance, the path <code>/my/dir/lath</code> could be mapped to the
 prefix <code>0xfa3209</code>. Key-values written into this directory
 would include this prefix.</p>
 <p>Foundation DB provides an encoding scheme for <a
@@ -94,11 +95,12 @@ on which waiting clients may place themselves. When the owner of the
 mutex releases, it will grab the next client from the head of the queue
 and make them the owner. Clients can watch the key-value specifying the
 owner and unblock when they are given control of the mutex.</p>
-<p>Because this is a distributed system, there is always the chance that
-the owner of the mutex could die and deadlock the entire application. To
-avoid this, the owner will be required to heartbeat the mutex. A
-background service will watch for stale heartbeats and pass the mutex
-ownership on to the next client.</p>
+<p>This is a distributed system, so there is always the chance that the
+owner of the mutex could die and deadlock the entire application. To
+avoid this, the owner will be required to heartbeat the mutex. A <a
+href="https://github.com/janderland/fdb-mutex/blob/5075a63324ef2c49d517b714134bff003a45093a/mutex.go#L54">background
+service</a> will watch for stale heartbeats and pass the mutex ownership
+on to the next client.</p>
 <p>Using my <a href="https://github.com/janderland/fql">query
 language</a>, we can describe the schema as follows:</p>
 <pre><code>% Always one owner key. When the mutex is unlocked,
@@ -116,16 +118,16 @@ language</a>, we can describe the schema as follows:</p>
 
 % When the owner releases the mutex, they pop a new owner
 % off the front of the queue. If the queue is empty then
-% they write an emtpy string for :name.
+% they write an empty string for :name.
 /path/to/mutex(&quot;queue&quot;,&lt;index:vstamp&gt;)=&lt;name:str&gt;
 /path/to/mutex(&quot;queue&quot;,:index)=clear
 /path/to/mutex(&quot;owner&quot;,:name)=nil</code></pre>
-<p>The <code>name</code> strings are unique identifiers provided by the
+<p>The <code>:name</code> strings are unique identifiers provided by the
 clients. Heartbeats and indexes (for ordering the queue) are written
-using versionstamps. As long as the heartbeat value keeps changing, we
-know the mutex owner is still alive. Because versionstamps are
-monotonically increasing, new clients will always be placed at the back
-of the queue.</p>
+using versionstamps. As long as the heartbeat value keeps changing with
+new versionstamps, we know the mutex owner is still alive. As the queue
+index, because versionstamps are monotonically increasing, new clients
+will always be placed at the back of the queue.</p>
 <p>We can easily dump the total state of the mutex by reading its entire
 subspace:</p>
 <pre class="query"><code>% Read the entire mutex state.
@@ -137,21 +139,22 @@ subspace:</p>
 <blockquote>
 <p>This article uses features of FQL (my <a
 href="https://github.com/janderland/fql">query language</a>) which I
-have yet to document publicly. I’m hoping the language is simple enough
-that readers can infer what the queries mean.</p>
+have yet to document publicly. In brief, there are a couple of changes.
+<code>vstamp</code> is a new data type representing a versionstamp.
+<code>clear</code> works on ranges of keys.</p>
 </blockquote>
 <h2 id="implementing-the-client">Implementing the Client</h2>
-<p>As stated earlier, Foundation DB does nothing to enforce the above
-schema; No authorizations, constraints, or structures are verified
-server side; the client must manage all of this.</p>
+<p>As stated earlier, Foundation DB does nothing to enforce the schema;
+No authorizations, constraints, or structures are verified server side;
+the client must manage all of this.</p>
 <p>In the client implementation, I isolate the marshaling of key-values
 to define the schema explicitly. I generally have a marshal and
-unmarshal method for every key and value, but for this application I
+unmarshal function for every key and value, but for this application I
 didn’t need to unmarshal the owner value or the queue key. Some
 marshaling methods return a key range which is used for reading an
-entire subspace. Below, I’ll list the prototypes of the <a
-href="https://github.com/janderland/fdb-mutex/blob/5075a63324ef2c49d517b714134bff003a45093a/kv.go#L183">marshaling
-methods</a>.</p>
+entire subspace. Below, I’ll list the <a
+href="https://github.com/janderland/fdb-mutex/blob/5075a63324ef2c49d517b714134bff003a45093a/kv.go#L183">marshal
+function</a> prototypes:</p>
 <pre class="language-go"><code>func packOwnerRange() (fdb.KeyRange, error)
 func packOwnerKey(name string) fdb.Key
 func unpackOwnerKey(key fdb.Key) (string, error)
@@ -160,8 +163,8 @@ func packQueueRange() (fdb.KeyRange, error)
 func packQueueKey() (fdb.Key, error)
 func packQueueValue(name string) []byte
 func unpackQueueValue(val []byte) string</code></pre>
-<p>Using these marshaling methods, I implement a <a
-href="https://github.com/janderland/fdb-mutex/blob/5075a63324ef2c49d517b714134bff003a45093a/kv.go#L23">method
+<p>Using these marshaling functions, I implement a <a
+href="https://github.com/janderland/fdb-mutex/blob/5075a63324ef2c49d517b714134bff003a45093a/kv.go#L23">function
 for each query</a>. The queries accept an <code>fdb.Transactor</code> as
 an argument. This can either be the handle to the database or a running
 transaction, allowing the queries to be run in isolation or composed
@@ -176,7 +179,7 @@ func dequeue(db fdb.Transactor) (string, error) </code></pre>
 <code>watchOwner()</code> acts like a future. When the owner changes,
 the channel returns <code>nil</code>. If an error occurs which causes
 the watch to fail, it returns an error.</p>
-<p>Finally, the public methods can string together several queries to
+<p>Finally, the public functions can string together several queries to
 implement the desired behavior. Below is the implementation for
 acquiring the mutex. This is a blocking call and depends on the
 non-blocking <code>TryAcquire</code> which claims the mutex if it’s
@@ -397,6 +400,7 @@ best to answer any questions.</p>
 </body>
 <script>
     hljs.highlightAll();
+    /*
     document.querySelectorAll(":not(pre) > code").forEach((e) => {
       let bash = false;
       for (let p = e.parentElement; p; p = p.parentElement) {
@@ -410,5 +414,6 @@ best to answer any questions.</p>
       else e.classList.add("language-fql");
       hljs.highlightElement(e);
     });
+    */
 </script>
 </html>

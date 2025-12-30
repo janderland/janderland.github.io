@@ -197,9 +197,9 @@ func (x *Mutex) Acquire(ctx context.Context, db fdb.Database) error {
   }
 
   // Check if we&#39;re the mutex owner. If not, then watch for writes on
-  // the owner key-value. When the watch fires, check if we&#39;re the owner
-  // again. Loop forever until either we are the owner or the cancelation
-  // token fires.
+  // the owner key-value. When the watch fires, check if we&#39;re the
+  // owner again. Loop forever until either we are the owner or the
+  // cancelation token fires.
   for {
     watch, err := db.Transact(func(tr fdb.Transaction) (any, error) {
       owner, err := x.getOwner(tr)

@@ -8,10 +8,10 @@
   <link href="https://fonts.googleapis.com/css?family=Roboto|Merriweather" rel="stylesheet" />
   <link rel="stylesheet" href="css/code.css" />
   <link rel="stylesheet" href="css/style.css" />
-  <link rel="alternate" type="application/rss+xml" title="jander.land RSS Feed" href="/feed.xml" />
   <script src="js/highlight.js"></script>
   <script src="js/fql.js"></script>
   <script src="js/go.js"></script>
+  <script src="js/init-highlighting.js"></script>
 </head>
 <body>
 <header>
@@ -21,14 +21,14 @@
 <span class="date">2025-12-27</span>
 <hr>
 <p>At work, I found myself in apparent need of synchronizing access to a
-shared resources. The actors requesting access were two distributed
+shared resource. The actors requesting access were two distributed
 services. Being fond and familiar with the “assembly language of
 databases”, I knew I could implement a distributed mutex on top of
 Foundation DB.</p>
 <p>Calling Foundation DB the “assembly language of databases” (something
 I once read on <a
 href="https://news.ycombinator.com/item?id=40328552">Hacker News</a>) is
-an exaggeration. Nonetheless, Foundation DB does provide a set
+an exaggeration. Nonetheless, Foundation DB does provide a set of
 primitives which makes accessing distributed memory safe and
 graceful.</p>
 <p>Further investigation into the requirements revealed that
@@ -71,7 +71,7 @@ beside its peers.</p>
 href="https://apple.github.io/foundationdb/developer-guide.html#directories">directory</a>.
 Traditional directory paths are mapped to short byte string prefixes.
 For instance, the path <code class="fql">/my/dir/path</code> could be
-mapped to the prefix <code class="fql">0xfa3209</code> Key-values
+mapped to the prefix <code class="fql">0xfa3209</code>. Key-values
 written into this directory would include this prefix.</p>
 <p>Foundation DB provides an encoding scheme for <a
 href="https://apple.github.io/foundationdb/data-modeling.html#tuples">tuples</a>.
@@ -196,10 +196,10 @@ the mutex if it’s unlocked or places the client onto the queue.</p>
 <pre class="language-go"><code>// Blocks until the current client is the owner of the mutex. The `ctx`
 // argument includes a cancelation signal for aborting the operation.
 func (x *Mutex) Acquire(ctx context.Context, db fdb.Database) error {
-  // Attempts a non-blocking aquire. If it succeeds, we can return.
+  // Attempts a non-blocking acquire. If it succeeds, we can return.
   acquired, err := x.TryAcquire(db)
   if err != nil {
-    return fmt.Errorf(&quot;failed to try aquire: %w&quot;, err)
+    return fmt.Errorf(&quot;failed to try acquire: %w&quot;, err)
   }
   if acquired {
     return nil
@@ -283,7 +283,7 @@ that one is trivial.</p>
     default:
       // Someone else is the owner (mutex is locked). Place
       // our name on the queue.
-      return false, x.enqueue(db, x.name)
+      return false, x.enqueue(tr, x.name)
     }
   })
   if err != nil {
@@ -314,7 +314,7 @@ preventing the client from acting on a stale read.</p>
 <p>In the sequence diagram above, take a look at the events happening
 between <code>t1</code> and <code>t2</code>. Because
 <code>client-A</code> reads the empty owner key, that key becomes a part
-of it’s conflict range. <code>client-B</code> overwrites this key and
+of its conflict range. <code>client-B</code> overwrites this key and
 commits before <code>client-A</code>. This causes
 <code>client-A</code>’s transaction to be rejected. Upon retrying the
 transaction, <code>client-A</code> sees that <code>client-B</code> is
@@ -330,7 +330,7 @@ locally or in GitHub actions, caches build &amp; test results, etc. A
 local installation of Foundation DB works fine as well.</p>
 <p>For each test, I create a random subspace to isolate the reads and
 writes. This subspace is deleted after each test runs. For this
-isolation to work, you must ensure your client does all it’s reads and
+isolation to work, you must ensure your client does all its reads and
 writes within the context of a <a
 href="https://github.com/janderland/fdb-mutex/blob/5075a63324ef2c49d517b714134bff003a45093a/mutex.go#L25">configurable
 subspace</a>.</p>
@@ -356,7 +356,7 @@ func runTest(t *testing.T, test testFn) {
   }
 
   // Schedule a destructor which deletes the directory
-  // (clearing all it&#39;s key-values) after the test is
+  // (clearing all its key-values) after the test is
   // complete.
   defer func() {
     err := directory.Root().Remove(db, []string{dirName})
@@ -385,7 +385,7 @@ schema, so the extra checks are warranted.</p>
       in := &quot;name&quot;
       out := UnpackQueueValue(PackQueueValue(in))
       require.Equal(out, in)
-  }
+  })
 }</code></pre>
 <h2 id="conclusion">Conclusion</h2>
 <p>As the name implies, Foundation DB operates at a lower level than
@@ -407,17 +407,9 @@ href="https://apple.github.io/foundationdb/index.html">documentation</a>
 for more information. If you have any questions, drop by the Foundation
 DB <a href="https://forums.foundationdb.org/">forums</a>. If you see <a
 href="https://forums.foundationdb.org/u/janderland/summary">me</a>
-around, please say “hi”. 😀</p>
+around, please say “hi”.</p>
 </body>
 <script>
-  document.querySelectorAll('.fql, .go').forEach(e => {
-    e.classList.replace('fql', 'language-fql');
-    e.classList.replace('go', 'language-go');
-  });
-
-  hljs.highlightAll();
-  document.querySelectorAll(":not(pre) > code[class^='language-']").forEach((e) => {
-    hljs.highlightElement(e);
-  });
+  initHighlighting(['fql', 'go']);
 </script>
 </html>

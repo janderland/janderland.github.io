@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>jander.land</title>
+    <link>https://jander.land/</link>
+    <description>I think and write</description>
+    <language>en-us</language>
+    <lastBuildDate>Wed, 07 Jan 2026 17:58:11 -0800</lastBuildDate>
+    <atom:link href="https://jander.land/feed.xml" rel="self" type="application/rss+xml"/>
+    <item>
+      <title>Intro to Foundation DB via a Distributed Mutex</title>
+      <link>https://jander.land/20251227_mutex.html</link>
+      <guid>https://jander.land/20251227_mutex.html</guid>
+      <pubDate>Sat, 27 Dec 2025 00:00:00 +0000</pubDate>
+      <description>Learn the fundamentals of FoundationDB</description>
+    </item>
+  </channel>
+</rss>
